@@ -188,6 +188,10 @@ async function chatOnce(prompt: string, token: string): Promise<string> {
     throw new APIException(EX.API_REQUEST_FAILED, "页面输入框未找到");
   }
   await ta.click({ force: true });
+  // 只发最后一条用户消息（页面输入框对超长多轮合并文本不友好，
+  // 历史 messages 已合并进 prompt，但 UI 实测长文本会被截断，
+  // 此处直接用完整 prompt）
+  await ta.click({ clickCount: 3 });
   await ta.type(prompt, { delay: 10 });
   await page.keyboard.press("Enter");
 
