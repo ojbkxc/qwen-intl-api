@@ -188,11 +188,9 @@ async function chatOnce(prompt: string, token: string): Promise<string> {
     throw new APIException(EX.API_REQUEST_FAILED, "页面输入框未找到");
   }
   await ta.click({ force: true });
-  // 只发最后一条用户消息（页面输入框对超长多轮合并文本不友好，
-  // 历史 messages 已合并进 prompt，但 UI 实测长文本会被截断，
-  // 此处直接用完整 prompt）
-  await ta.click({ clickCount: 3 });
-  await ta.type(prompt, { delay: 10 });
+  // fill() 直接设置 value（React 受控组件安全），比逐字 type 更可靠：
+  // type 的 keydown 粒度下中文长文本会被输入框截断
+  await ta.fill(prompt);
   await page.keyboard.press("Enter");
 
   // 等待 SSE 完整接收（页面响应捕获是整段的，等 resp.text() 返回）
@@ -259,12 +257,20 @@ async function createCompletion(
   messages: any[],
   token: string
 ) {
-  const prompt = messages.reduce((acc, m) => {
-    const text = _.isArray(m.content)
-      ? m.content.filter((c) => c.type == "text").map((c) => c.text || "").join("")
-      : String(m.content || "");
-    return acc + `<|im_start|>${m.role || "user"}\n${text}<|im_end|>\n`;
-  }, "");
+  // 多轮消息合并为一段完整 prompt；UI 输入对超长文本稳定，
+  // 但 <|\im_start|> 这类特殊标记会被输入法过滤，改用自然分隔
+  const prompt = messages
+    .map((m) => {
+      const text = _.isArray(m.content)
+        ? m.content
+            .filter((c) => c.type == "text")
+            .map((c) => c.text || "")
+            .join("")
+        : String(m.content || "");
+      const role = m.role == "assistant" ? "AI回答" : m.role == "system" ? "系统设定" : "用户";
+      return `[${role}]\n${text}`;
+    })
+    .join("\n\n") + "\n\n[用户]\n请根据以上对话内容进行回复。";
 
   const run = (async () => {
     const sse = await chatOnce(prompt, token);
