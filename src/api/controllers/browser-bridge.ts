@@ -12,6 +12,7 @@
  */
 
 import crypto from "crypto";
+import { createRequire } from "module";
 import { PassThrough } from "stream";
 
 import _ from "lodash";
@@ -20,12 +21,11 @@ import APIException from "@/lib/exceptions/APIException.ts";
 import EX from "@/api/consts/exceptions.ts";
 import logger from "@/lib/logger.ts";
 
-// 兜底：无 playwright-core 时桥不可用，接口返回明确错误
+// ESM 上下文用 createRequire 加载 playwright-core；缺失时桥不可用
 let chromium: any = null;
 try {
-  // 依赖可选：package.json 中未强制安装，运行时按需 require
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  ({ chromium } = require("playwright-core"));
+  const nodeRequire = createRequire(import.meta.url);
+  chromium = nodeRequire("playwright-core").chromium;
 } catch (err) {
   logger.warn("playwright-core is not installed, browser bridge unavailable");
 }
