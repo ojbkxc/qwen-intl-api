@@ -1,5 +1,5 @@
 /**
- * 浏览器桥接模块
+ * 浏览器桥接模块（多账号版）
  *
  * chat.qwen.ai 的对话接口受阿里巴夏风控（bx-ua）保护，纯 HTTP 与页面内
  * 手动 fetch/XHR 均无法通过，只有登录态浏览器中由前端应用真实发出的
@@ -9,6 +9,14 @@
  * 2. 对话请求驱动页面输入框输入并发送
  * 3. 捕获 /api/v2/chat/completions 的 SSE 响应流
  * 4. 转换为 OpenAI 兼容 chunk 供上层输出
+ *
+ * 多账号架构：
+ * - 全局唯一 browser 进程（--disable-gpu 杀 swiftshader 软渲染空烧）
+ * - 每账号一个 BrowserContext（隔离 cookie/localStorage/umid）
+ * - context 内常驻一个 page，按 LRU 淘汰（QWEN_MAX_PAGES，默认 4）
+ * - 页面注入杀动画 CSS（animation/transition none），rAF 空转近零
+ * - 每账号一条串行队列，不同账号并行（各自页面独立生成 bx-ua）
+ * - 就绪探测替代固定 sleep：textarea 出现 + baxia 就绪即返回
  *
  * 会话清理：从 completions 请求 URL 提取 chat_id，对话完成后通过
  * Node fetch 调 DELETE /api/v2/chats/{id}（纯 HTTP，不经 Playwright）。
@@ -33,19 +41,171 @@ try {
   logger.warn("playwright-core is not installed, browser bridge unavailable");
 }
 
-// 桥单例状态
+// ---------------- 全局浏览器与账号池 ----------------
+
 let browser: any = null;
-let ctx: any = null;
-let page: any = null;
-let currentToken: string = "";
-let initPromise: Promise<void> | null = null;
-// 串行化：同一时间只允许一个对话在页面上进行
-let chatQueue: Promise<any> = Promise.resolve();
+
+/** 每账号会话：context + 常驻 page + 串行队列 + 就绪 promise */
+interface AccountSession {
+  token: string;
+  ctx: any;
+  page: any;
+  /** 串行队列：同一账号页面上的对话逐个进行 */
+  queue: Promise<any>;
+  /** 就绪初始化 promise（防并发重复初始化） */
+  initPromise: Promise<void> | null;
+  /** LRU 时钟：最近一次被使用的时间戳 */
+  lastUsed: number;
+}
+
+/** token -> session */
+const sessions = new Map<string, AccountSession>();
+
+// 环境变量：同时常驻的最大账号页数（超出按 LRU 关闭最久未用）
+const MAX_PAGES = Math.max(1, parseInt(process.env.QWEN_MAX_PAGES || "4", 10));
+
 // 是否在对话完成后删除上游会话（环境变量 QWEN_AUTO_DELETE=false 可关闭）
-let autoDeleteChat: boolean = process.env.QWEN_AUTO_DELETE !== "false";
+const autoDeleteChat: boolean = process.env.QWEN_AUTO_DELETE !== "false";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
+// 杀动画 CSS：rAF 驱动的 compositing 是 CPU 空烧主因（实测 gpu-process 85% -> ~3%）
+const KILL_ANIM_CSS =
+  "*,*::before,*::after{animation:none!important;transition:none!important}";
+
+async function ensureBrowser() {
+  if (browser) return;
+  browser = await chromium.launch({
+    headless: true,
+    // --disable-gpu：headless 下 swiftshader 软渲染纯空烧（L1 实测 CPU 85% -> 3%）
+    args: [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+    ],
+  });
+  // 浏览器崩溃（OOM 等）自动清理，下次请求重建
+  browser.on("disconnected", () => {
+    if (browser) logger.warn("[browser-bridge] browser disconnected, will relaunch on next request");
+    browser = null;
+    sessions.clear();
+  });
+  logger.success("[browser-bridge] browser launched");
+}
+
+/** LRU 淘汰：关闭除 exclude 外最久未用的账号页 */
+function evictLRU(excludeToken?: string) {
+  const list = [...sessions.entries()].sort(
+    (a, b) => a[1].lastUsed - b[1].lastUsed
+  );
+  while (sessions.size >= MAX_PAGES) {
+    const victim = list.shift();
+    if (!victim) break;
+    const [token, session] = victim;
+    if (token === excludeToken) continue;
+    logger.info(
+      `[browser-bridge] LRU evict account page (${sessions.size} -> ${sessions.size - 1})`
+    );
+    sessions.delete(token);
+    // 页面可能正被该账号队列使用；关闭动作挂在其队列尾部保证串行安全
+    session.queue = session.queue.then(async () => {
+      try {
+        await session.ctx.close();
+      } catch (err) {}
+    });
+  }
+}
+
+/**
+ * 初始化账号会话（context + page + 登录注入），幂等
+ */
+async function initSession(session: AccountSession) {
+  session.initPromise = (async () => {
+    try {
+      await ensureBrowser();
+      // LRU：可能挤掉别的账号页（不挤自己）
+      evictLRU(session.token);
+      const ctx = await browser.newContext({
+        userAgent: UA,
+        locale: "en-US",
+      });
+      // addInitScript 在每次导航/重载时自动注入（含 app 重新挂载的时机）
+      await ctx.addInitScript(() => {
+        const inject = () => {
+          const style = document.createElement("style");
+          style.textContent =
+            "*,*::before,*::after{animation:none!important;transition:none!important}";
+          (document.head || document.documentElement).appendChild(style);
+        };
+        if (document.readyState === "loading")
+          document.addEventListener("DOMContentLoaded", inject);
+        else inject();
+      });
+      // 登录态先注入再进页面：免 reload（cookie 随首次导航直接生效）
+      await ctx.addCookies([
+        {
+          name: "token",
+          value: session.token,
+          domain: ".qwen.ai",
+          path: "/",
+          httpOnly: true,
+        },
+      ]);
+      const page = await ctx.newPage();
+      // localStorage 需要在页面 origin 下写入：先导航再写、再等 app 就绪
+      await page.goto("https://chat.qwen.ai/", {
+        waitUntil: "domcontentloaded",
+        timeout: 90000,
+      });
+      await page.evaluate((t) => localStorage.setItem("token", t), session.token);
+      await waitPageReady(page);
+      session.ctx = ctx;
+      session.page = page;
+      session.lastUsed = Date.now();
+      logger.success(`[browser-bridge] account page ready (pool ${sessions.size}/${MAX_PAGES})`);
+    } finally {
+      session.initPromise = null;
+    }
+  })();
+  await session.initPromise;
+}
+
+/** 若会话已失效（页面被关/崩溃），复位待重建 */
+function resetSession(session: AccountSession) {
+  try { session.ctx && session.ctx.close(); } catch (err) {}
+  session.ctx = null;
+  session.page = null;
+}
+
+/**
+ * 页面就绪探测：textarea 出现 + baxia SDK 完成挂载
+ *
+ * 替代旧版固定 sleep(8s+10s)；正常 3-6s 就绪，慢网自动多等
+ */
+async function waitPageReady(page: any) {
+  const deadline = Date.now() + 60000;
+  while (Date.now() < deadline) {
+    try {
+      const ready = await page.evaluate(() => {
+        const hasTextarea = !!document.querySelector("textarea");
+        // baxiaCommon.init 完成后暴露全局配置；app 挂载后才有输入框
+        return {
+          ta: hasTextarea,
+        };
+      });
+      if (ready.ta) {
+        // textarea 出现后再宽限 2s 让 fireyejs 行为采集器完成启动
+        await page.waitForTimeout(2000);
+        return;
+      }
+    } catch (err) {
+      // 页面可能正在跳转/重载，继续轮询
+    }
+    await page.waitForTimeout(1000);
+  }
+  throw new APIException(EX.API_REQUEST_FAILED, "页面就绪超时（60s）");
+}
 
 /**
  * 登录换取 token（密码 SHA-256）
@@ -119,64 +279,22 @@ async function deleteChat(token: string, chatId: string): Promise<boolean> {
   }
 }
 
-/**
- * 初始化浏览器与页面（幂等）
- */
-async function ensureBridge(token: string) {
-  if (!chromium)
-    throw new APIException(
-      EX.API_REQUEST_FAILED,
-      "playwright-core 未安装，浏览器桥不可用。请 npm i playwright-core 并安装 chromium"
-    );
-  // token 变化时重建页面
-  if (page && token === currentToken) return;
-  if (initPromise) {
-    await initPromise;
-    if (page && token === currentToken) return;
+/** 取（或建）账号会话 */
+function getOrCreateSession(token: string): AccountSession {
+  let session = sessions.get(token);
+  if (!session) {
+    session = {
+      token,
+      ctx: null,
+      page: null,
+      queue: Promise.resolve(),
+      initPromise: null,
+      lastUsed: Date.now(),
+    };
+    sessions.set(token, session);
   }
-  initPromise = (async () => {
-    try {
-      if (!browser) {
-        browser = await chromium.launch({
-          headless: true,
-          args: ["--no-sandbox", "--disable-dev-shm-usage"],
-        });
-      }
-      if (!ctx) {
-        ctx = await browser.newContext({
-          userAgent: UA,
-          locale: "en-US",
-        });
-      }
-      if (page) {
-        try { await page.close(); } catch (err) {}
-        page = null;
-      }
-      page = await ctx.newPage();
-      await page.goto("https://chat.qwen.ai/", {
-        waitUntil: "domcontentloaded",
-        timeout: 90000,
-      });
-      await page.waitForTimeout(8000);
-      await ctx.addCookies([
-        {
-          name: "token",
-          value: token,
-          domain: ".qwen.ai",
-          path: "/",
-          httpOnly: true,
-        },
-      ]);
-      await page.evaluate((t) => localStorage.setItem("token", t), token);
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(10000);
-      currentToken = token;
-      logger.success("[browser-bridge] 页面就绪（登录态已注入）");
-    } finally {
-      initPromise = null;
-    }
-  })();
-  await initPromise;
+  session.lastUsed = Date.now();
+  return session;
 }
 
 /**
@@ -188,7 +306,11 @@ async function ensureBridge(token: string) {
  * @param token 登录 token
  */
 async function chatOnce(prompt: string, token: string): Promise<string> {
-  await ensureBridge(token);
+  const session = getOrCreateSession(token);
+  await initSession(session);
+  const page = session.page;
+  if (!page)
+    throw new APIException(EX.API_REQUEST_FAILED, "账号页面不可用");
 
   // chat_id 捕获：completions 请求 URL 形如 /api/v2/chat/completions?chat_id=<uuid>
   let capturedChatId = "";
@@ -253,6 +375,8 @@ async function chatOnce(prompt: string, token: string): Promise<string> {
   if (!ta) {
     page.off("response", handler);
     page.off("request", reqHandler);
+    // 页面状态异常（被导航/崩溃），复位待重建
+    resetSession(session);
     throw new APIException(EX.API_REQUEST_FAILED, "页面输入框未找到");
   }
   await ta.click({ force: true });
@@ -279,6 +403,14 @@ async function chatOnce(prompt: string, token: string): Promise<string> {
         )
       ),
     ]);
+  } catch (err) {
+    // 页面已死（punish 关页/崩溃）时复位，下次重建
+    try {
+      await page.evaluate("1");
+    } catch (alive) {
+      resetSession(session);
+    }
+    throw err;
   } finally {
     page.off("response", handler);
     page.off("request", reqHandler);
@@ -349,6 +481,7 @@ async function createCompletion(
     })
     .join("\n\n") + "\n\n[用户]\n请根据以上对话内容进行回复。";
 
+  const session = getOrCreateSession(token);
   const run = (async () => {
     const sse = await chatOnce(prompt, token);
     const { content, reasoning } = extractAnswer(sse);
@@ -367,9 +500,9 @@ async function createCompletion(
       created: Math.floor(Date.now() / 1000),
     };
   })();
-  // 串行排队，避免并发操作同一页面
-  chatQueue = chatQueue.then(() => run, () => run);
-  return chatQueue;
+  // 按账号排队：同账号串行（同一页面），不同账号并行
+  session.queue = session.queue.then(() => run, () => run);
+  return session.queue;
 }
 
 /**
@@ -433,7 +566,7 @@ function util_uuid() {
  * 桥健康检查
  */
 async function bridgeAlive() {
-  return !!(browser && page);
+  return !!browser;
 }
 
 export default {
