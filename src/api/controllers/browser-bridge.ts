@@ -17,6 +17,7 @@
  * - 页面注入杀动画 CSS（animation/transition none），rAF 空转近零
  * - 每账号一条串行队列，不同账号并行（各自页面独立生成 bx-ua）
  * - 就绪探测替代固定 sleep：textarea 出现 + baxia 就绪即返回
+ * - 资源拦截：alicdn 图片/字体/媒体 abort（风控 SDK script 放行）
  *
  * 会话清理：从 completions 请求 URL 提取 chat_id，对话完成后通过
  * Node fetch 调 DELETE /api/v2/chats/{id}（纯 HTTP，不经 Playwright）。
@@ -153,6 +154,19 @@ async function initSession(session: AccountSession) {
         },
       ]);
       const page = await ctx.newPage();
+      // L4 资源拦截：拦掉 alicdn 图片/字体/媒体（装饰资源），每页省 30-50MB。
+      // 风控 SDK（baxia/fireyejs/awsc）是 g.alicdn.com 上的 script，放行；
+      // chat.qwen.ai 自身 API（含图片下载）不拦。
+      await page.route(/^(?!https?:\/\/g\.alicdn\.com\/AWSC\/|https?:\/\/g\.alicdn\.com\/sd\/)/i, (route: any) => {
+        const req = route.request();
+        const url = req.url() as string;
+        const type = req.resourceType();
+        // 只拦 alicdn 系静态资源的媒体类（图片/字体/媒体），script/document/xhr/fetch 一律放行
+        const isAlicdn = /alicdn\.com/i.test(url);
+        const isMedia = ["image", "font", "media"].includes(type);
+        if (isAlicdn && isMedia) return route.abort();
+        return route.continue();
+      });
       // localStorage 需要在页面 origin 下写入：先导航再写、再等 app 就绪
       await page.goto("https://chat.qwen.ai/", {
         waitUntil: "domcontentloaded",
