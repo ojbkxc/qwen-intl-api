@@ -6,6 +6,7 @@ import chat from "./chat.ts";
 import images from "./images.ts";
 import models from "./models.ts";
 import ping from "./ping.ts";
+import pool from './pool.ts';
 import token from './token.ts';
 
 export default [
@@ -27,5 +28,6 @@ export default [
     images,
     models,
     ping,
+    pool,
     token
 ];
