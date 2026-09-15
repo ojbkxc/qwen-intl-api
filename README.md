@@ -12,8 +12,17 @@
 | --- | --- | --- |
 | 账号密码登录换 token | ✅ 可用 | `POST /auth/signin` |
 | token 存活检测 | ✅ 可用 | `POST /token/check` |
-| 对话补全 | ⚠️ 受风控阻塞 | 接口受 qwen.ai 巴夏风控（bx-ua）保护，纯 HTTP 请求命中人机校验，需接入浏览器运行时 |
-| AI 绘图 | ❌ 未实现 | 同样受风控保护 |
+| 对话补全 | ✅ 可用 | 内置 headless Chromium 浏览器桥，绕过巴夏风控（bx-ua） |
+| 会话自动清理 | ✅ 可用 | 每次对话完成后自动删除上游会话，不留痕迹 |
+
+## 原理
+
+chat.qwen.ai 的对话接口受阿里巴夏风控（bx-ua）保护，纯 HTTP 请求会命中 `FAIL_SYS_USER_VALIDATE` 人机校验。本项目内置 Playwright + headless Chromium：
+
+1. 启动浏览器并注入登录 token（cookie + localStorage）
+2. 对话请求驱动页面真实 UI 输入发送（风控只放行页面自身发出的请求）
+3. 拦截捕获 `/api/v2/chat/completions` 的 SSE 响应流，转换为 OpenAI 兼容格式
+4. 从请求 URL 提取 `chat_id`，对话完成后通过纯 HTTP 调 `DELETE /api/v2/chats/{id}` 删除上游会话
 
 ## 接入准备
 
@@ -28,15 +37,38 @@ POST /auth/signin
 
 > 登录密码在客户端做 SHA-256 后提交，服务端不存储任何账号信息。
 
+也可以直接在 `Authorization` 头中传 `email:password` 格式，服务端会自动登录换取 token（推荐，token 可自动刷新）。
+
+## Docker 部署
+
+```shell
+docker pull ojbkxc/qwen-intl-api:latest
+```
+
+或使用 docker-compose（见 `docker-compose.yml`）：
+
+```shell
+docker-compose up -d
+```
+
+镜像已内置 chromium 浏览器与全部系统依赖，开箱即用。
+
 ## 本地运行
 
 ```shell
 npm i
 npm run build
+npx playwright-core install chromium   # 安装浏览器
 npm start
 ```
 
-默认端口 `8001`（可通过 `configs/dev/service.yml` 或环境变量 `SERVER_PORT` 修改）。
+默认端口 `8001`（可通过 `configs/dev/service.yml` 修改）。
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `QWEN_AUTO_DELETE` | `true` | 对话完成后是否自动删除上游会话，设为 `false` 关闭 |
 
 ## 接口列表
 
@@ -81,7 +113,7 @@ npm start
 
 **POST /v1/chat/completions**
 
-header：`Authorization: Bearer [token]`
+header：`Authorization: Bearer [token 或 email:password]`
 
 请求：
 ```json
@@ -98,6 +130,6 @@ header：`Authorization: Bearer [token]`
 
 ## 已知限制
 
-1. 对话接口受 `chat.qwen.ai` 的巴夏风控（Alibaba Security bx-ua / x5sec）保护，纯 HTTP 请求会命中 `FAIL_SYS_USER_VALIDATE` 人机校验并返回空内容。需要内嵌浏览器运行时（Playwright + bx SDK）生成 `bx-ua`、`bx-umidtoken` 等风控头才能稳定调用。
-2. 绘图接口与对话接口同理，暂未实现。
+1. 对话依赖浏览器桥（Playwright），首次对话需加载页面，约 20~40 秒；页面就绪后单次对话约 5~15 秒。同一时间仅串行处理一个对话（共享单个浏览器页面）。
+2. AI 绘图接口与对话同理受风控保护，暂未实现。
 3. Token 统计为固定占位数字，实际 token 不可统计。
