@@ -130,23 +130,30 @@ function statusTag(a) {
   return '<span class="tag ok">正常</span>';
 }
 
+// email 转义后再进 innerHTML/onclick，防注入
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
 async function loadList() {
   try {
     const data = await api('GET', '/pool/list');
     const list = data.accounts || [];
     $('listMsg').style.display = list.length ? 'none' : 'block';
     $('listMsg').textContent = list.length ? '' : '池里还没有账号，先在上面添加';
-    $('tbody').innerHTML = list.map(a => `
+    $('tbody').innerHTML = list.map((a, i) => `
       <tr>
         <td>${a.index + 1}</td>
-        <td>${a.email}</td>
+        <td>${esc(a.email)}</td>
         <td>${statusTag(a)}</td>
         <td>${a.failCount}</td>
         <td>${fmtTime(a.lastUsed)}</td>
         <td>
-          <button onclick="testOne('${a.email}')">测活</button>
-          <button onclick="toggleOne('${a.email}', ${!a.disabled})">${a.disabled ? '启用' : '禁用'}</button>
-          <button class="danger" onclick="removeOne('${a.email}')">删除</button>
+          <button onclick="testOne(${i})">测活</button>
+          <button onclick="toggleOne(${i}, ${!a.disabled})">${a.disabled ? '启用' : '禁用'}</button>
+          <button class="danger" onclick="removeOne(${i})">删除</button>
         </td>
       </tr>`).join('');
     if (list.length) show('listMsg', '', true);
@@ -183,22 +190,33 @@ async function importBulk() {
   } catch (e) { show('addMsg', e.message); }
 }
 
-async function testOne(email) {
+// 按列表下标操作（email 由服务器返回，避免拼进 HTML 属性）
+async function testOne(i) {
   try {
+    const { accounts } = await api('GET', '/pool/list');
+    const email = accounts[i].email;
     const r = await api('GET', '/pool/test?email=' + encodeURIComponent(email));
     alert(r.live ? `✅ ${email} 登录成功` : `❌ ${email}: ${r.error || '登录失败'}`);
   } catch (e) { alert('测活失败: ' + e.message); }
 }
 
-async function toggleOne(email, disabled) {
-  try { await api('POST', '/pool/toggle', { email, disabled }); loadList(); }
-  catch (e) { alert(e.message); }
+async function toggleOne(i, disabled) {
+  try {
+    const { accounts } = await api('GET', '/pool/list');
+    const email = accounts[i].email;
+    await api('POST', '/pool/toggle', { email, disabled });
+    loadList();
+  } catch (e) { alert(e.message); }
 }
 
-async function removeOne(email) {
-  if (!confirm(`确定删除 ${email}？`)) return;
-  try { await api('POST', '/pool/remove', { email }); loadList(); }
-  catch (e) { alert(e.message); }
+async function removeOne(i) {
+  try {
+    const { accounts } = await api('GET', '/pool/list');
+    const email = accounts[i].email;
+    if (!confirm(`确定删除 ${email}？`)) return;
+    await api('POST', '/pool/remove', { email });
+    loadList();
+  } catch (e) { alert(e.message); }
 }
 
 $('adminToken').value = getToken();
