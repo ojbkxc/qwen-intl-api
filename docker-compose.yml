@@ -1,0 +1,15 @@
+version: '3'
+
+services:
+  qwen-intl-api:
+    image: ojbkxc/qwen-intl-api:latest
+    container_name: qwen-intl-api
+    restart: always
+    ports:
+      - "8001:8001"
+    environment:
+      - TZ=Asia/Shanghai
+      # 对话完成后自动删除上游会话（默认开启；设为 false 关闭）
+      - QWEN_AUTO_DELETE=true
+    # chromium 需要的共享内存，低于 --disable-dev-shm-usage 之后更高内存占用
+    shm_size: 512mb
