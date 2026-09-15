@@ -34,7 +34,7 @@ jobs:
           images: ojbkxc/qwen-intl-api
           tags: |
             type=raw,value=latest
-            type=semver,pattern={{version}}
+            type=ref,event=tag
             type=sha,prefix=
 
       - name: Build and push
