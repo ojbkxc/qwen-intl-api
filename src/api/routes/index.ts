@@ -20,6 +20,15 @@ export default [
                         Expires: '-1'
                     }
                 });
+            },
+            '/pool/ui': async () => {
+                const content = await fs.readFile('public/pool.html');
+                return new Response(content, {
+                    type: 'html',
+                    headers: {
+                        Expires: '-1'
+                    }
+                });
             }
         }
     },

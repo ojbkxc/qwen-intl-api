@@ -75,7 +75,33 @@ export default {
       return { ok: true };
     },
 
-    /** 批量导入（email 数组，密码统一） */
+    /** 批量导入：accounts 数组，每项 {email, password}（各账号密码可不同） */
+    "/import-bulk": async (request: Request) => {
+      assertAdmin(request);
+      request.validate("body.accounts", _.isArray);
+      const added: string[] = [];
+      const skipped: string[] = [];
+      for (const item of request.body.accounts) {
+        const email = String(item?.email || "").trim();
+        const password = String(item?.password || "");
+        if (!email || !password) {
+          skipped.push(email || "(invalid)");
+          continue;
+        }
+        try {
+          pool.add(email, password);
+          added.push(email);
+        } catch (err: any) {
+          skipped.push(email);
+        }
+      }
+      logger.info(
+        `[account-pool] import-bulk: ${added.length} added, ${skipped.length} skipped`
+      );
+      return { added, skipped };
+    },
+
+    /** 批量导入（email 数组，统一密码）——旧格式兼容 */
     "/import": async (request: Request) => {
       assertAdmin(request);
       request
