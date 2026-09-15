@@ -11,5 +11,7 @@ services:
       - TZ=Asia/Shanghai
       # 对话完成后自动删除上游会话（默认开启；设为 false 关闭）
       - QWEN_AUTO_DELETE=true
+      # 同时常驻的最大账号页数（超出按 LRU 淘汰最久未用账号；每页约 200-260MB）
+      - QWEN_MAX_PAGES=4
     # chromium 需要的共享内存，低于 --disable-dev-shm-usage 之后更高内存占用
     shm_size: 512mb

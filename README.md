@@ -13,16 +13,21 @@
 | 账号密码登录换 token | ✅ 可用 | `POST /auth/signin` |
 | token 存活检测 | ✅ 可用 | `POST /token/check` |
 | 对话补全 | ✅ 可用 | 内置 headless Chromium 浏览器桥，绕过巴夏风控（bx-ua） |
+| 多账号并发 | ✅ 可用 | 每账号独立浏览器上下文，不同账号并行，LRU 页池 |
 | 会话自动清理 | ✅ 可用 | 每次对话完成后自动删除上游会话，不留痕迹 |
 
 ## 原理
 
 chat.qwen.ai 的对话接口受阿里巴夏风控（bx-ua）保护，纯 HTTP 请求会命中 `FAIL_SYS_USER_VALIDATE` 人机校验。本项目内置 Playwright + headless Chromium：
 
-1. 启动浏览器并注入登录 token（cookie + localStorage）
+1. 全局共享一个浏览器进程，**每个账号一个独立 BrowserContext**（cookie/localStorage 隔离），页面常驻复用
 2. 对话请求驱动页面真实 UI 输入发送（风控只放行页面自身发出的请求）
 3. 拦截捕获 `/api/v2/chat/completions` 的 SSE 响应流，转换为 OpenAI 兼容格式
 4. 从请求 URL 提取 `chat_id`，对话完成后通过纯 HTTP 调 `DELETE /api/v2/chats/{id}` 删除上游会话
+
+多账号并发：同一账号的对话串行排队；**不同账号各自页面并行处理**（独立生成风控签名）。账号页按 LRU 淘汰，超出 `QWEN_MAX_PAGES` 时自动关闭最久未用的账号页，下次请求自动重建。
+
+资源优化（v1.1.0）：`--disable-gpu` + 禁用页面动画 + 拦截 CDN 装饰资源，空闲 CPU 从 ~100% 降至 ~2%。
 
 ## 接入准备
 
@@ -69,6 +74,7 @@ npm start
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `QWEN_AUTO_DELETE` | `true` | 对话完成后是否自动删除上游会话，设为 `false` 关闭 |
+| `QWEN_MAX_PAGES` | `4` | 同时常驻的最大账号页数（每页约 200~260MB 内存），超出按 LRU 淘汰最久未用的账号 |
 
 ## 接口列表
 
@@ -130,6 +136,7 @@ header：`Authorization: Bearer [token 或 email:password]`
 
 ## 已知限制
 
-1. 对话依赖浏览器桥（Playwright），首次对话需加载页面，约 20~40 秒；页面就绪后单次对话约 5~15 秒。同一时间仅串行处理一个对话（共享单个浏览器页面）。
-2. AI 绘图接口与对话同理受风控保护，暂未实现。
-3. Token 统计为固定占位数字，实际 token 不可统计。
+1. 对话依赖浏览器桥（Playwright），每个账号首次对话需加载页面（约 10~20 秒）；页面就绪后单次对话约 5~15 秒。同一账号串行处理，不同账号并行。
+2. 超出 `QWEN_MAX_PAGES` 的账号页会被 LRU 回收，该账号下次请求需重新加载页面。
+3. AI 绘图接口与对话同理受风控保护，暂未实现。
+4. Token 统计为固定占位数字，实际 token 不可统计。
