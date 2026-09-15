@@ -1,6 +1,6 @@
 {
   "name": "qwen-intl-api",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Qwen International (chat.qwen.ai) Free API Server",
   "type": "module",
   "main": "dist/index.js",
