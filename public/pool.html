@@ -146,7 +146,7 @@
 <div class="card">
   <table>
     <thead>
-      <tr><th>#</th><th>账号</th><th>状态</th><th>失败</th><th>最近使用</th><th style="width:250px">操作</th></tr>
+      <tr><th>#</th><th>账号</th><th>状态</th><th>最近使用</th><th style="width:250px">操作</th></tr>
     </thead>
     <tbody id="tbody"></tbody>
   </table>
@@ -229,9 +229,8 @@ function fmtTime(ts) {
 }
 
 function statusTag(a) {
-  if (a.disabled) return '<span class="tag off">已禁用</span>';
-  if (a.cooling) return `<span class="tag warn">冷却 ${a.cooldownRemainSec}s</span>`;
-  if (a.failCount > 0) return `<span class="tag warn">失败 ${a.failCount} 次</span>`;
+  if (a.disabled) return '<span class="tag off">失败</span>';
+  if (a.cooling) return '<span class="tag bad">失败</span>';
   return '<span class="tag ok">正常</span>';
 }
 
@@ -253,7 +252,6 @@ async function loadList() {
         <td>${a.index + 1}</td>
         <td>${esc(a.email)}</td>
         <td>${statusTag(a)}</td>
-        <td>${a.failCount}</td>
         <td>${fmtTime(a.lastUsed)}</td>
         <td>
           <button onclick="testOne(${i})">测活</button>
