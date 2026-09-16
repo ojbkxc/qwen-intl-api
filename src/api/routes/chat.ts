@@ -37,7 +37,9 @@ export default {
         }
         pool.setToken(email, token);
         try {
-          return await runCompletion(model, messages, token, request.body.stream);
+          const resp = await runCompletion(model, messages, token, request.body.stream);
+          pool.markSuccess(email);
+          return resp;
         } catch (err: any) {
           // 请求失败标记账号，换下一个账号重试一次
           pool.markFailure(email, err.message);
