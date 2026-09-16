@@ -28,10 +28,11 @@ export default {
       // 未带 Authorization：走账号池
       const rawHeader = request.headers.authorization;
       if (!rawHeader) {
-        const { email, password, token: cached } = pool.acquire();
+        const acc = pool.acquire();
+        const { email, password } = acc;
         // 有缓存 token 且未过期直接用；否则登录换新
-        let token = cached;
-        if (!token || pool.needsRefresh({ email, token, tokenTime: Date.now() })) {
+        let token = acc.token;
+        if (!token || pool.needsRefresh(acc)) {
           token = await bridge.signinToken(email, password);
         }
         pool.setToken(email, token);

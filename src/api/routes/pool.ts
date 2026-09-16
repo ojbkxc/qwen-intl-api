@@ -75,6 +75,17 @@ export default {
       return { ok: true };
     },
 
+    /** 编辑账号：改 email 和/或密码 */
+    "/edit": async (request: Request) => {
+      assertAdmin(request);
+      request
+        .validate("body.email", _.isString)
+        .validate("body.newEmail", _.isString)
+        .validate("body.password", _.isString);
+      pool.edit(request.body.email, request.body.newEmail, request.body.password);
+      return { ok: true };
+    },
+
     /** 批量导入：accounts 数组，每项 {email, password}（各账号密码可不同） */
     "/import-bulk": async (request: Request) => {
       assertAdmin(request);

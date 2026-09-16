@@ -60,6 +60,21 @@
   .login-box h2 { font-size: 16px; margin-bottom: 4px; }
   .login-box .hint { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
   body.locked > *:not(#loginMask) { display: none; }
+  /* 编辑弹窗 */
+  #editMask {
+    position: fixed; inset: 0; z-index: 90;
+    background: rgba(0,0,0,.55);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #editMask.hidden { display: none; }
+  .edit-box {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 22px 20px; width: 360px;
+  }
+  .edit-box h3 { font-size: 15px; margin-bottom: 12px; }
+  .edit-box .field { margin-bottom: 10px; }
+  .edit-box label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .edit-box input { width: 100%; }
 </style>
 </head>
 <body class="locked">
@@ -73,6 +88,29 @@
       <button class="primary" onclick="doLogin()">登录</button>
     </div>
     <div id="loginMsg" class="msg"></div>
+  </div>
+</div>
+
+<div id="editMask" class="hidden">
+  <div class="edit-box">
+    <h3>编辑账号</h3>
+    <div class="field">
+      <label>原 email（只读）</label>
+      <input id="editOldEmail" type="text" readonly/>
+    </div>
+    <div class="field">
+      <label>新 email（不改就保持原样）</label>
+      <input id="editNewEmail" type="text" placeholder="保持原样"/>
+    </div>
+    <div class="field">
+      <label>密码</label>
+      <input id="editPassword" type="text" placeholder="新密码"/>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="primary" onclick="saveEdit()">保存</button>
+      <button onclick="closeEdit()">取消</button>
+    </div>
+    <div id="editMsg" class="msg"></div>
   </div>
 </div>
 
@@ -108,7 +146,7 @@
 <div class="card">
   <table>
     <thead>
-      <tr><th>#</th><th>账号</th><th>状态</th><th>失败</th><th>最近使用</th><th style="width:190px">操作</th></tr>
+      <tr><th>#</th><th>账号</th><th>状态</th><th>失败</th><th>最近使用</th><th style="width:250px">操作</th></tr>
     </thead>
     <tbody id="tbody"></tbody>
   </table>
@@ -219,6 +257,7 @@ async function loadList() {
         <td>${fmtTime(a.lastUsed)}</td>
         <td>
           <button onclick="testOne(${i})">测活</button>
+          <button onclick="editOne(${i})">编辑</button>
           <button onclick="toggleOne(${i}, ${!a.disabled})">${a.disabled ? '启用' : '禁用'}</button>
           <button class="danger" onclick="removeOne(${i})">删除</button>
         </td>
@@ -285,6 +324,40 @@ async function removeOne(i) {
     loadList();
   } catch (e) { alert(e.message); }
 }
+
+// 编辑：弹窗预填，保存调 /pool/edit
+function editOne(i) {
+  api('GET', '/pool/list').then(({ accounts }) => {
+    const acc = accounts[i];
+    $('editOldEmail').value = acc.email;
+    $('editNewEmail').value = acc.email;
+    $('editPassword').value = '';
+    show('editMsg', '');
+    $('editMask').classList.remove('hidden');
+    $('editPassword').focus();
+  }).catch(e => alert(e.message));
+}
+function closeEdit() {
+  $('editMask').classList.add('hidden');
+}
+async function saveEdit() {
+  const oldEmail = $('editOldEmail').value;
+  const newEmail = $('editNewEmail').value.trim();
+  const password = $('editPassword').value;
+  if (!password) return show('editMsg', '密码不能为空');
+  if (!newEmail) return show('editMsg', 'email 不能为空');
+  try {
+    await api('POST', '/pool/edit', { email: oldEmail, newEmail, password });
+    closeEdit();
+    loadList();
+  } catch (e) { show('editMsg', e.message); }
+}
+// 编辑弹窗：Esc 关闭 / Enter 保存
+document.addEventListener('keydown', e => {
+  if ($('editMask').classList.contains('hidden')) return;
+  if (e.key === 'Escape') closeEdit();
+  if (e.key === 'Enter' && document.activeElement !== $('editPassword') && document.activeElement !== $('editNewEmail')) saveEdit();
+});
 
 // 启动：先显示遮罩，已存令牌则尝试自动登录
 (async function init() {

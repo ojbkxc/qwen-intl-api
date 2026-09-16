@@ -125,6 +125,31 @@ class AccountPool {
     this.save();
   }
 
+  /** 编辑账号：email 和/或 password（email 改名时保持原位置，token 缓存失效） */
+  edit(oldEmail: string, newEmail: string, password: string) {
+    const acc = this.accounts.find((a) => a.email === oldEmail);
+    if (!acc) throw new Error(`账号不存在: ${oldEmail}`);
+    const email = newEmail.trim();
+    if (!email) throw new Error("email 不能为空");
+    if (!password) throw new Error("password 不能为空");
+    if (email !== oldEmail && this.accounts.some((a) => a.email === email))
+      throw new Error(`新 email 已存在: ${email}`);
+    if (email !== oldEmail) {
+      // 保持原位置替换，不打乱轮询顺序
+      const idx = this.accounts.indexOf(acc);
+      this.accounts[idx] = { email, password, failCount: 0, cooldownUntil: 0 };
+      logger.success(`[account-pool] edited ${oldEmail} -> ${email}`);
+    } else {
+      acc.password = password;
+      acc.failCount = 0;
+      acc.cooldownUntil = 0;
+      delete (acc as any).token;
+      delete (acc as any).tokenTime;
+      logger.success(`[account-pool] edited password of ${email}`);
+    }
+    this.save();
+  }
+
   /**
    * 轮询取一个可用账号
    *
