@@ -73,13 +73,12 @@ class Server {
         this.app.use((ctx: any) => {
             const request = new Request(ctx);
             logger.debug(`-> ${ctx.request.method} ${ctx.request.url} request is not supported - ${request.remoteIP || "unknown"}`);
-            // const failureBody = new FailureBody(new Exception(EX.SYSTEM_NOT_ROUTE_MATCHING, "Request is not supported"));
-            // const response = new Response(failureBody);
-            const message = `[请求有误]: 正确请求为 POST -> /v1/chat/completions，当前请求为 ${ctx.request.method} -> ${ctx.request.url} 请纠正`;
+            const message = `[请求有误]: 无匹配路由 ${ctx.request.method} -> ${ctx.request.url}。对话接口为 POST /v1/chat/completions，管理页为 /pool/ui`;
             logger.warn(message);
-            const failureBody = new FailureBody(new Error(message));
+            const failureBody = new FailureBody(new Exception(EX.SYSTEM_NOT_ROUTE_MATCHING, message));
             const response = new Response(failureBody);
             response.injectTo(ctx);
+            ctx.status = 404;
             if(config.system.requestLog)
                 logger.info(`<- ${request.method} ${request.url} ${response.time - request.time}ms`);
         });
