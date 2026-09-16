@@ -351,6 +351,8 @@ async function chatOnce(prompt: string, token: string): Promise<string> {
     sseReject = reject;
   });
   let settled = false;
+  // completions POST 是否已发出（发送后才开始计算首响应超时）
+  let sentAt = 0;
   const handler = async (resp: any) => {
     try {
       if (
@@ -397,15 +399,18 @@ async function chatOnce(prompt: string, token: string): Promise<string> {
   // fill() 直接设置 value（React 受控组件安全），比逐字 type 更可靠：
   // type 的 keydown 粒度下中文长文本会被输入框截断
   await ta.fill(prompt);
+  sentAt = Date.now();
   await page.keyboard.press("Enter");
 
-  // 等待 SSE 完整接收（页面响应捕获是整段的，等 resp.text() 返回）
+  // 等待 SSE 完整接收（页面响应捕获是整段的，等 resp.text() 返回）。
+  // 双超时：发送后 30s 内上游无任何 completions 响应 → 视为静默挂起
+  // （风控偶发拦截/会话卡死），提前抛错复位页面，不再干等 120s。
   let sseBody = "";
   try {
     sseBody = await Promise.race([
       ssePromise,
-      new Promise<string>((_, rej) =>
-        setTimeout(
+      new Promise<string>((_, rej) => {
+        const t = setTimeout(
           () =>
             rej(
               new APIException(
@@ -414,10 +419,37 @@ async function chatOnce(prompt: string, token: string): Promise<string> {
               )
             ),
           120000
-        )
-      ),
+        );
+        // 首响应看门狗：任一 completions 响应到达（settled）即停止检测；
+        // 发送后 30s 仍无响应 → 提前抛错
+        const watchdog = setInterval(() => {
+          if (settled) {
+            clearInterval(watchdog);
+            clearTimeout(t);
+            return;
+          }
+          if (sentAt && Date.now() - sentAt > 30000) {
+            clearInterval(watchdog);
+            clearTimeout(t);
+            rej(
+              new APIException(
+                EX.API_REQUEST_FAILED,
+                "上游 30s 无响应（静默挂起），已提前中止"
+              )
+            );
+          }
+        }, 1000);
+      }),
     ]);
   } catch (err) {
+    // 静默挂起：页面大概率卡死，强制复位下次重建（evaluate 探活失败也会复位）
+    if (String((err as any)?.message || "").includes("静默挂起")) {
+      resetSession(session);
+      logger.warn(
+        `[browser-bridge] upstream silent hang detected, session reset (${token.slice(0, 8)}...)`
+      );
+      throw err;
+    }
     // 页面已死（punish 关页/崩溃）时复位，下次重建
     try {
       await page.evaluate("1");
