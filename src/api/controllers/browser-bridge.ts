@@ -403,7 +403,7 @@ async function chatOnce(prompt: string, token: string): Promise<string> {
   await page.keyboard.press("Enter");
 
   // 等待 SSE 完整接收（页面响应捕获是整段的，等 resp.text() 返回）。
-  // 双超时：发送后 30s 内上游无任何 completions 响应 → 视为静默挂起
+  // 双超时：发送后 60s 内上游无任何 completions 响应 → 视为静默挂起
   // （风控偶发拦截/会话卡死），提前抛错复位页面，不再干等 120s。
   let sseBody = "";
   try {
@@ -421,20 +421,20 @@ async function chatOnce(prompt: string, token: string): Promise<string> {
           120000
         );
         // 首响应看门狗：任一 completions 响应到达（settled）即停止检测；
-        // 发送后 30s 仍无响应 → 提前抛错
+        // 发送后 60s 仍无响应 → 提前抛错
         const watchdog = setInterval(() => {
           if (settled) {
             clearInterval(watchdog);
             clearTimeout(t);
             return;
           }
-          if (sentAt && Date.now() - sentAt > 30000) {
+          if (sentAt && Date.now() - sentAt > 60000) {
             clearInterval(watchdog);
             clearTimeout(t);
             rej(
               new APIException(
                 EX.API_REQUEST_FAILED,
-                "上游 30s 无响应（静默挂起），已提前中止"
+                "上游 60s 无响应（静默挂起），已提前中止"
               )
             );
           }
