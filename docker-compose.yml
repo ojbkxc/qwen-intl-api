@@ -2,7 +2,7 @@ version: '3'
 
 services:
   qwen-intl-api:
-    image: ojbkxc/qwen-intl-api:v1.1.0
+    image: ojbkxc/qwen-intl-api:v1.0.4
     container_name: qwen-intl-api
     restart: always
     ports:
