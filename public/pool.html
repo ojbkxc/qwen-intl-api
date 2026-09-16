@@ -46,9 +46,35 @@
   .msg.okk { color: var(--ok); }
   .empty { color: var(--muted); padding: 20px 0; text-align: center; }
   details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+  /* 登录遮罩 */
+  #loginMask {
+    position: fixed; inset: 0; z-index: 100;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #loginMask.hidden { display: none; }
+  .login-box {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 28px 24px; width: 320px;
+  }
+  .login-box h2 { font-size: 16px; margin-bottom: 4px; }
+  .login-box .hint { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  body.locked > *:not(#loginMask) { display: none; }
 </style>
 </head>
-<body>
+<body class="locked">
+
+<div id="loginMask">
+  <div class="login-box">
+    <h2>账号池管理</h2>
+    <div class="hint">请输入管理令牌（QWEN_ADMIN_TOKEN）</div>
+    <div class="row">
+      <input id="loginToken" class="wide" type="password" placeholder="管理令牌" autofocus/>
+      <button class="primary" onclick="doLogin()">登录</button>
+    </div>
+    <div id="loginMsg" class="msg"></div>
+  </div>
+</div>
 
 <h1>账号池管理</h1>
 <div class="sub">qwen-intl-api · 服务端账号池 · 对话接口未带 Authorization 时自动从这里轮询取号</div>
@@ -58,6 +84,7 @@
     <input id="adminToken" class="wide" type="password" placeholder="管理令牌（QWEN_ADMIN_TOKEN）"/>
     <button class="primary" onclick="saveToken()">保存</button>
     <button onclick="loadList()">刷新列表</button>
+    <button onclick="logout()">退出登录</button>
   </div>
   <div id="authMsg" class="msg"></div>
 </div>
@@ -92,12 +119,52 @@
 const $ = id => document.getElementById(id);
 const API = '';
 
+// 空令牌时也能手动登出（遮罩重现）
+function logout() {
+  localStorage.removeItem('qwen_admin_token');
+  document.getElementById('loginMask').classList.remove('hidden');
+  document.body.classList.add('locked');
+  $('loginToken').value = '';
+  $('loginMsg').textContent = '';
+  $('loginToken').focus();
+}
+
 function getToken() { return localStorage.getItem('qwen_admin_token') || ''; }
 function saveToken() {
   localStorage.setItem('qwen_admin_token', $('adminToken').value.trim());
   show('authMsg', '已保存到 localStorage（仅存在本机浏览器）', true);
   loadList();
 }
+// 页面级登录：遮罩 + 校验通过才显示内容
+async function doLogin() {
+  const tk = $('loginToken').value.trim();
+  if (!tk) return show('loginMsg', '请输入管理令牌');
+  $('loginToken').disabled = true;
+  try {
+    const resp = await fetch('/pool/list', { headers: { 'X-Admin-Token': tk } });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      localStorage.setItem('qwen_admin_token', tk);
+      unlock();
+    } else {
+      show('loginMsg', data.message || '令牌错误');
+      $('loginToken').disabled = false;
+    }
+  } catch (e) {
+    show('loginMsg', '网络错误: ' + e.message);
+    $('loginToken').disabled = false;
+  }
+}
+function unlock() {
+  document.getElementById('loginMask').classList.add('hidden');
+  document.body.classList.remove('locked');
+  $('adminToken').value = getToken();
+  loadList();
+}
+// 登录框回车提交
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && document.activeElement === $('loginToken')) doLogin();
+});
 function show(id, text, ok) {
   const el = $(id);
   el.textContent = text;
@@ -219,8 +286,19 @@ async function removeOne(i) {
   } catch (e) { alert(e.message); }
 }
 
-$('adminToken').value = getToken();
-if (getToken()) loadList();
+// 启动：先显示遮罩，已存令牌则尝试自动登录
+(async function init() {
+  $('adminToken').value = getToken();
+  if (getToken()) {
+    try {
+      const resp = await fetch('/pool/list', { headers: { 'X-Admin-Token': getToken() } });
+      if (resp.ok) return unlock();
+    } catch (e) { /* 网络错误也走手动登录 */ }
+    localStorage.removeItem('qwen_admin_token');
+    $('adminToken').value = '';
+  }
+  $('loginToken').focus();
+})();
 </script>
 </body>
 </html>
